@@ -16,6 +16,7 @@ import os  # Add this import statement
 from tensorflow.keras.regularizers import l1  # 添加L1正则化器的导入
 import sys  # 添加导入语句
 import matplotlib
+import re
 matplotlib.use('Agg')  # Use a non-interactive backend
 
 def download_daily_data(ticker, start_date):
@@ -523,7 +524,7 @@ def train_agent(data, features, initial_balance=100000.0, transaction_cost=0.001
     agent.save_model(model_save_path)
     return agent, test_data, features, epoch_rewards
 
-def backtest(agent, test_data, features, initial_balance=100000.0, transaction_cost=0.001, model_path="dql_agent_model.h5"):
+def backtest(agent, test_data, features, initial_balance=100000.0, transaction_cost=0.001, output_dir="./", model_path="dql_agent_model.h5"):
     """
     使用训练好的智能体进行回测，评估策略表现，并输出专业回测指标。
     """
@@ -534,6 +535,9 @@ def backtest(agent, test_data, features, initial_balance=100000.0, transaction_c
     portfolio_values = []  # 保存每个时间步的资产价值
     daily_returns = []  # 保存每日收益率
     buy_signals, sell_signals = [], []
+    strong_buy_signals, strong_sell_signals = [], []  # 新增强买入和强卖出信号列表
+    recent_signals = []  # 新增：保存最近5天的信号
+    signals = []
 
     for t in range(len(test_data) - 1):
         state = test_data[features].iloc[t].values.reshape(1, -1)
@@ -545,12 +549,33 @@ def backtest(agent, test_data, features, initial_balance=100000.0, transaction_c
             max_shares = int(cash // (current_price * (1 + transaction_cost)))
             cash -= max_shares * current_price * (1 + transaction_cost)
             holdings += max_shares
-            buy_signals.append(test_data.index[t])
+            #buy_signals.append(test_data.index[t])
 
         elif action == 1 and holdings > 0:  # 卖出
             cash += holdings * current_price * (1 - transaction_cost)
             holdings = 0
+            #sell_signals.append(test_data.index[t])
+
+        if action == 0:
+            buy_signals.append(test_data.index[t])
+            if q_values[0][0] >= 3 * q_values[0][1]:
+                strong_buy_signals.append(test_data.index[t])
+                signal_entry = f"{ticker} - Strong Buy Signal on {test_data.index[t]}: Action = {action}, Price = {current_price:.2f}"
+            else:
+                signal_entry = f"{ticker} - Buy Signal on {test_data.index[t]}: Action = {action}, Price = {current_price:.2f}"
+            signals.append(signal_entry)
+            logging.info(signal_entry)
+
+        elif action == 1:
             sell_signals.append(test_data.index[t])
+            if q_values[0][1] >= 3 * q_values[0][1]:
+                strong_sell_signals.append(test_data.index[t])
+                signal_entry = f"{ticker} - Strong Sell Signal on {test_data.index[t]}: Action = {action}, Price = {current_price:.2f}"
+            else:
+                signal_entry = f"{ticker} - Sell Signal on {test_data.index[t]}: Action = {action}, Price = {current_price:.2f}"
+            signals.append(signal_entry)
+            logging.info(signal_entry)
+
 
         # 计算当前组合的资产价值
         portfolio_value = cash + holdings * current_price
@@ -585,15 +610,42 @@ def backtest(agent, test_data, features, initial_balance=100000.0, transaction_c
     logging.info(f"Annualized Volatility: {volatility * 100:.2f}%")
     logging.info(f"Sharpe Ratio: {sharpe_ratio:.2f}")
     logging.info(f"Win Rate: {win_rate * 100:.2f}%")
+
+     # 获取最新日期和5天前的日期
+    latest_date = test_data.index[-1]
+    five_days_ago = latest_date - pd.Timedelta(days=5)
+
+    # 遍历 signals 列表
+    for signal in signals:
+        # 使用正则表达式提取日期
+        date_match = re.search(r'\d{4}-\d{2}-\d{2}', signal)  # 匹配格式为 YYYY-MM-DD 的日期
+        if date_match:
+            signal_date_str = date_match.group(0)  # 获取匹配的日期字符串
+            signal_date = pd.to_datetime(signal_date_str)  # 将字符串转换为日期时间对象
+
+            # 检查信号日期是否在最近5天内
+            if five_days_ago <= signal_date <= latest_date:
+                recent_signals.append(signal)  # 如果在范围内，添加到 recent_signals 列表中
+     # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
     
-    return portfolio_values, buy_signals, sell_signals
+    # 保存信号到指定文件夹
+    signal_file_path = os.path.join(output_dir, "signal.txt")
+    with open(signal_file_path, "w") as f:
+        for signal in recent_signals:
+            f.write(signal + "\n")
+
+    logging.info(f"Signals written to {signal_file_path}")
+    
+    return portfolio_values, buy_signals, sell_signals, strong_buy_signals, strong_sell_signals
 
 if __name__ == "__main__":
     # 获取 ticker 参数，默认为 "BABA"
+    current_date = datetime.datetime.now().strftime("%Y-%m-%d")  # 计算当前日期并转换为字符串
     ticker = sys.argv[1] if len(sys.argv) > 1 else "BABA"  # 处理命令行参数
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # 获取当前时间戳
-    output_dir = f"./data/DQN-RL-Daily/{ticker}-{timestamp}"  # 创建文件夹名，添加 ticker 前缀
+    output_dir = f"./data/DQN-RL-Daily-{current_date}/{ticker}-DQN-RL-Daily-{current_date}"  # 创建文件夹名
     print(output_dir)
     os.makedirs(output_dir, exist_ok=True)  # 创建文件夹
 
@@ -621,7 +673,7 @@ if __name__ == "__main__":
 
     # Check if agent and test_data are valid before backtesting
     if agent is not None and test_data is not None:
-        portfolio_values, buy_signals, sell_signals = backtest(agent, test_data, features, model_path=os.path.join(output_dir, "dql_agent_mlp_model_daily.h5"))
+        portfolio_values, buy_signals, sell_signals, strong_buy_signals, strong_sell_signals = backtest(agent, test_data, features, 100000, 0.001, output_dir, model_path=os.path.join(output_dir, "dql_agent_mlp_model_daily.h5"))
     else:
         logging.error("Agent training failed or test data is empty. Backtesting cannot proceed.")
         exit()  # Prevents the code from trying to plot None values
@@ -633,6 +685,10 @@ if __name__ == "__main__":
         plt.scatter(test_data.index[buy_signal_indices], test_data['Close'].iloc[buy_signal_indices], marker='^', color='g', label='Buy Signal', alpha=1)
         sell_signal_indices = [test_data.index.get_loc(ts) for ts in sell_signals]
         plt.scatter(test_data.index[sell_signal_indices], test_data['Close'].iloc[sell_signal_indices], marker='v', color='r', label='Sell Signal', alpha=1)
+        strong_buy_signal_indices = [test_data.index.get_loc(ts) for ts in strong_buy_signals]
+        plt.scatter(test_data.index[strong_buy_signal_indices], test_data['Close'].iloc[strong_buy_signal_indices], marker='^', color='yellow', label='Strong Buy Signal', alpha=1)
+        strong_sell_signal_indices = [test_data.index.get_loc(ts) for ts in strong_sell_signals]
+        plt.scatter(test_data.index[strong_sell_signal_indices], test_data['Close'].iloc[strong_sell_signal_indices], marker='v', color='orange', label='Strong Sell Signal', alpha=1)
         plt.title(f"Trading Strategy - Buy & Sell Signals for {ticker}")
         plt.legend()
         plt.savefig(os.path.join(output_dir, "trading_strategy_signals.png"))  # Save image
