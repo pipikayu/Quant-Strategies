@@ -568,7 +568,7 @@ def backtest(agent, test_data, features, initial_balance=100000.0, transaction_c
 
         elif action == 1:
             sell_signals.append(test_data.index[t])
-            if q_values[0][1] >= 3 * q_values[0][1]:
+            if q_values[0][1] >= 3 * q_values[0][0]:
                 strong_sell_signals.append(test_data.index[t])
                 signal_entry = f"{ticker} - Strong Sell Signal on {test_data.index[t]}: Action = {action}, Price = {current_price:.2f}"
             else:
