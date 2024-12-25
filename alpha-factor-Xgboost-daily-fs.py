@@ -196,7 +196,7 @@ def calculate_alpha_factors(data):
 
 def prepare_data(data, ticker, output_dir):
     logging.info("Preparing data...")
-    """
+    
     features = [
         'rsi', 'macd', 'macd_signal', 'ppo', 'roc', 'obv','mfi',
         'K', 'D', 'stoch_K', 'stoch_D','chaikin_oscillator',
@@ -221,7 +221,7 @@ def prepare_data(data, ticker, output_dir):
         'ATR', 'high_low', 'high_close', 'low_close', 'tr',
         #'mfi','ppo','sma5','stoch_D' 
     ]
-    
+    """
     # Fill missing values with -1 for the features
     data[features] = data[features].fillna(-1)
 
@@ -235,9 +235,38 @@ def prepare_data(data, ticker, output_dir):
         logging.error("Not all features are present in the data.")
         return None, features  # Return None to indicate failure
 
-    # 计算未来 5 个周期的收盘价
-    data['future_close_5'] = data['Close'].shift(-5)  # 向上移动5个周期的收盘价
+    """
+    # 新增特征：对已有特征取自然对数
+    
+    ln_features = []
+    for feature in features:
+        ln_feature_name = "ln_"+feature
+        logging.info(feature)
+        logging.info(ln_feature_name)
+        data[ln_feature_name] = np.log1p(data[feature])  # 使用 log1p 处理
+        ln_features.append(ln_feature_name)
 
+
+    # 生成两两特征相乘的新特征，基于自然对数特征
+    multi_features = []
+    ln_features = [f"ln_{feature}" for feature in features]
+    for i in range(len(ln_features)):
+        for j in range(i + 1, len(ln_features)):
+            new_feature_name = f"{ln_features[i]}_times_{ln_features[j]}"
+            data[new_feature_name] = data[ln_features[i]] * data[ln_features[j]]
+            multi_features.append(new_feature_name)  # 确保新特征名被添加到 features 列表中
+
+    # 新增：生成两两特征相除的新特征，分母加0.5
+    div_features = []
+    for i in range(len(ln_features)):
+        for j in range(len(ln_features)):
+            if i != j:  # 避免除以自身
+                new_feature_name = f"{ln_features[i]}_div_{ln_features[j]}"
+                data[new_feature_name] = data[ln_features[i]] / (data[ln_features[j]] + 0.5)  # 分母加0.5
+                div_features.append(new_feature_name)
+    
+    features += ln_features + multi_features + div_features  # 更新特征列表
+    """
     # 计算未来 10 个周期的最大和最小收盘价
     data = data.iloc[::-1]
     data.loc[:, 'future_max_close'] = data['Close'].rolling(window=5).max()  # Use .loc to avoid SettingWithCopyWarning
@@ -264,7 +293,7 @@ def prepare_data(data, ticker, output_dir):
     logging.info(f"Number of features: {len(features)}")
     
     # 保存特征到本地文件，包括 action 列
-    features_df = data[features + ['action', 'future_close_5', 'future_max_close', 'future_min_close']]
+    features_df = data[features + ['action'] + ['future_max_close'] + ['future_min_close']]
     features_file_path = os.path.join(output_dir, "features.csv")  # Save to output_dir
     features_df.to_csv(features_file_path, index=False)  # 保存为 CSV 文件
     logging.info(f"Features saved to {features_file_path}.")  # Log the save location
@@ -295,26 +324,26 @@ def train_agent(data, features, initial_balance=100000.0, transaction_cost=0.001
     train_data = data.iloc[:train_size]
     test_data = data.iloc[train_size:]
 
-    if train_data.empty:
-        logging.error("Training data is empty. Cannot train the agent.")
-        return None, None, features, []
-
     # 统计不同分类的样本个数
     class_counts = train_data['action'].value_counts()
     logging.info(f"Training samples count by class:\n{class_counts}")  # 打印分类样本个数到日志
+
+    if train_data.empty:
+        logging.error("Training data is empty. Cannot train the agent.")
+        return None, None, features, []
 
     # 准备训练数据
     X_train = train_data[features]
     y_train = train_data['action']  # 使用构造的 action 列
 
     # Perform feature selection using RFECV
-    #rfecv = RFECV(estimator=RandomForestClassifier(), step=1, cv=StratifiedKFold(5), scoring='accuracy', min_features_to_select = 10,verbose=1)
-    #rfecv.fit(X_train, y_train)
+    rfecv = RFECV(estimator=RandomForestClassifier(), step=1, cv=StratifiedKFold(5), scoring='accuracy', min_features_to_select = 10,verbose=1)
+    rfecv.fit(X_train, y_train)
 
 
     # Get the selected features
-    #selected_features = [feature for feature, support in zip(features, rfecv.support_) if support]
-    #logging.info(f"Selected Features: {selected_features}, Feature Count: {len(selected_features)}")
+    selected_features = [feature for feature, support in zip(features, rfecv.support_) if support]
+    logging.info(f"Selected Features: {selected_features}, Feature Count: {len(selected_features)}")
 
     # Train the XGBClassifier with selected features
     model = xgb.XGBClassifier(
@@ -329,10 +358,10 @@ def train_agent(data, features, initial_balance=100000.0, transaction_cost=0.001
         reg_alpha=1, # 添加L1正则化参数
         #class_weight='balanced'
     )
-    model.fit(X_train[features], y_train)
+    model.fit(X_train[selected_features], y_train)
 
     # 计算训练集的预测结果和准确率
-    y_train_pred = model.predict(X_train[features])
+    y_train_pred = model.predict(X_train[selected_features])
     train_accuracy = accuracy_score(y_train, y_train_pred)  # Calculate overall accuracy
     
     # Log training accuracy
@@ -343,17 +372,17 @@ def train_agent(data, features, initial_balance=100000.0, transaction_cost=0.001
     logging.info("Classification Report:\n" + class_report)  # Log classification report
 
     # Use selected_features instead of features
-    feature_importances = pd.Series(model.feature_importances_, index=features)
-    selected_model_features = feature_importances.nlargest(len(features)).index.tolist()
+    feature_importances = pd.Series(model.feature_importances_, index=selected_features)
+    selected_model_features = feature_importances.nlargest(len(selected_features)).index.tolist()
     logging.info(f"Selected Model Features: {selected_model_features}")
 
     # 保存模型
     model.save_model(model_save_path)
     logging.info(f"Model saved to {model_save_path}.")  # 记录保存信息
 
-    return model, test_data  # 返回模型、测试数据和选择的特征
+    return model, test_data, selected_features  # 返回模型、测试数据和选择的特征
 
-def backtest(model, test_data, initial_balance=100000.0, transaction_cost=0.001, model_path="xgboost_model.json", output_dir="./", ticker=""):
+def backtest(model, test_data, selected_features, initial_balance=100000.0, transaction_cost=0.001, model_path="xgboost_model.json", output_dir="./", ticker=""):
     """
     使用训练好的智能体进行回测，评估策略表现，并输出专业回测指标。
     """
@@ -365,7 +394,7 @@ def backtest(model, test_data, initial_balance=100000.0, transaction_cost=0.001,
     stop_loss_threshold = 0.07  # 7%止损阈值
 
     # 确保测试数据的特征列与训练时一致
-    if not all(feature in test_data.columns for feature in features):
+    if not all(feature in test_data.columns for feature in selected_features):
         logging.error("Test data does not contain all required features.")
         return None, [], []
 
@@ -373,7 +402,7 @@ def backtest(model, test_data, initial_balance=100000.0, transaction_cost=0.001,
     signals = []
 
     for t in range(len(test_data)):
-        state = test_data[features].iloc[t].values.reshape(1, -1)  # Use selected features
+        state = test_data[selected_features].iloc[t].values.reshape(1, -1)  # Use selected features
         
         # 使用 predict_proba 方法进行预测
         probabilities = model.predict_proba(state)  # 获取每个类别的概率
@@ -407,12 +436,12 @@ def backtest(model, test_data, initial_balance=100000.0, transaction_cost=0.001,
             sell_signals.append(test_data.index[t])
             logging.info(f"Stop loss triggered at {current_price:.2f} on {test_data.index[t]}.")
 
-        if probabilities[0][0] >= 0.5 and probabilities[0][1] <= 0.2:
+        if probabilities[0][0] >= 0.5:
             strong_buy_signals.append(test_data.index[t])
             signal_entry = f"{ticker} - Strong Buy Signal on {test_data.index[t]}: Action = 0, Price = {current_price:.2f}"
             signals.append(signal_entry)
             logging.info(signal_entry)
-        elif probabilities[0][1] >= 0.5 and probabilities[0][0] <= 0.2:
+        elif probabilities[0][1] >= 0.5:
             strong_sell_signals.append(test_data.index[t])
             signal_entry = f"{ticker} - Strong Sell Signal on {test_data.index[t]}: Action = 1, Price = {current_price:.2f}"
             signals.append(signal_entry)
@@ -527,7 +556,7 @@ if __name__ == "__main__":
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # 获取当前时间戳
     ticker = sys.argv[1] if len(sys.argv) > 1 else "BABA"  # 处理命令行参数
     start_date = "2020-01-01"
-    output_dir = f"./data/Xgboost-Daily-{current_date}/{ticker}-Xgboost-Daily-{current_date}"  # 创建文件夹名
+    output_dir = f"./data/Xgboost-Daily-FS-{current_date}/{ticker}-Xgboost-Daily-{current_date}"  # 创建文件夹名
     os.makedirs(output_dir, exist_ok=True)  # 创建文件夹
 
     # Configure logging to save to a file
@@ -551,13 +580,13 @@ if __name__ == "__main__":
     ic_results = calculate_ic(data, features, output_dir)
 
     # 训练 XGBoost 模型并获取测试数据和选择的特征
-    model, test_data = train_agent(data, features, model_save_path=os.path.join(output_dir, "xgboost_model.json"))
+    model, test_data, selected_features = train_agent(data, features, model_save_path=os.path.join(output_dir, "xgboost_model.json"))
     
     # 检查是否有有效的测试数据
     if test_data is not None and not test_data.empty:
         # 进行回测，使用选择的特征
         portfolio_values, buy_signals, sell_signals, strong_buy_signals, strong_sell_signals = backtest(
-            model, test_data, model_path=os.path.join(output_dir, "xgboost_model.json"), output_dir=output_dir, ticker=ticker
+            model, test_data, selected_features, model_path=os.path.join(output_dir, "xgboost_model.json"), output_dir=output_dir, ticker=ticker
         )
     else:
         logging.error("No valid data available for backtesting.")
