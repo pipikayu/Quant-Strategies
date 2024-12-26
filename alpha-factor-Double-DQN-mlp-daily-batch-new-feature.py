@@ -279,7 +279,7 @@ class DQLAgent:
         # 采样时要保证时间上的连续性
         minibatch = []
         for i in range(batch_size):
-            idx = random.randint(0, len(self.memory) - 2)  # 防止越界，确保 next_state 存在
+            idx = random.randint(0, len(self.memory) - 1)  # 防止越界，确保 next_state 存在
             state, action, reward, next_state, done = self.memory[idx]
             minibatch.append((state, action, reward, next_state, done))
 
