@@ -31,7 +31,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # 初始化 Qlib 环境
 qlib.init(provider_uri="/Users/huiyu/Desktop/qlib_data/us_data", region=REG_CN)
 
-# 获取宁德时代日线数据
+STRONG_BUY_THRESHOLD = 0.95
+STRONG_SELL_THRESHOLD = 0.95
+
 def get_daily_data(stock_code, start_date, end_date):
     """
     获取指定股票的日线数据
@@ -384,12 +386,15 @@ def plot_price_with_actions(data, y_pred, title):
     plt.axis('equal')  # 确保 x 和 y 轴的比例相同
     plt.show()
 
-def backtest_strategy(data, predictions, actions, stock_code, initial_capital=100000, transaction_fee=0.001, model_name='Model'):
+def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.001, model_name='Model'):
     capital = initial_capital
     position = 0  # 当前持有的股票数量
     buy_price = 0  # 记录买入价格
     buy_indices = []  # 记录买入点的索引
     sell_indices = []  # 记录卖出点的索引
+    strong_buy_indices = np.where(strong_buy_points)[0]  # 强买点索引
+    strong_sell_indices = np.where(strong_sell_points)[0]  # 强卖点索引
+
     for i in range(len(predictions)):
         action = predictions[i]
         current_price = data['$close'].iloc[i]
@@ -429,6 +434,11 @@ def backtest_strategy(data, predictions, actions, stock_code, initial_capital=10
     axs[1].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
     axs[1].scatter(action_buy_indices, data['$close'].iloc[action_buy_indices], color='red', label='Action Buy (0)', marker='o', alpha=0.5)  # 测试数据买入点
     axs[1].scatter(action_sell_indices, data['$close'].iloc[action_sell_indices], color='green', label='Action Sell (1)', marker='x', alpha=0.5)  # 测试数据卖出点
+    
+    # 在第二个坐标图上绘制强买点和强卖点
+    axs[1].scatter(strong_buy_indices, data['$close'].iloc[strong_buy_indices], color='blue', label='Strong Buy', marker='^')  # 强买点
+    axs[1].scatter(strong_sell_indices, data['$close'].iloc[strong_sell_indices], color='orange', label='Strong Sell', marker='v')  # 强卖点
+    
     axs[1].set_title(f'Test Actions - {stock_code} - Buy (0) and Sell (1)')
     axs[1].set_xlabel('Time')
     axs[1].set_ylabel('Price')
@@ -436,10 +446,6 @@ def backtest_strategy(data, predictions, actions, stock_code, initial_capital=10
 
     plt.tight_layout()
     plt.show()
-
-    # 保存图形为文件
-    #plt.savefig(f'backtest_results_{stock_code}.png')  # 保存图形
-    #plt.close()  # 关闭图形以释放内存
 
     return final_value
 
@@ -506,6 +512,19 @@ class EnsembleModel(nn.Module):
         combined_output = torch.cat((lstm_output, tcts_output), dim=1)  # 拼接两个模型的输出
         final_output = self.fc(combined_output)  # 通过MLP进行最终预测
         return final_output
+
+# 在模型评估中识别强买点和强卖点
+def evaluate_model(model, X_test, strong_buy_threshold, strong_sell_threshold):
+    model.eval()
+    with torch.no_grad():
+        outputs = model(X_test)
+        scores = torch.softmax(outputs, dim=1)  # 计算每个动作的概率
+        _, predicted = torch.max(outputs, 1)
+
+        strong_buy_points = (predicted == 0) & (scores[:, 0] > strong_buy_threshold)  # 强买点
+        strong_sell_points = (predicted == 1) & (scores[:, 1] > strong_sell_threshold)  # 强卖点
+
+    return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy()
 
 if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     parser = argparse.ArgumentParser(description='Stock Code for LSTM Prediction')
@@ -580,7 +599,7 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     HIDDEN_SIZE = 64
     NUM_LAYERS = 2
     OUTPUT_SIZE = 3  # 三个动作：买入、卖出、持有
-    EPOCHS = 120
+    EPOCHS = 150
     BATCH_SIZE = 32
 
     model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE, dropout_rate=0.1)  # 添加 dropout_rate 参数
@@ -614,8 +633,11 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
         accuracy = accuracy_score(y_test, predicted.numpy())
         print(f"Test Accuracy: {accuracy}")
 
+    # 在模型评估中调用
+    predicted, strong_buy_points, strong_sell_points = evaluate_model(model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+
     # 进行回测
-    final_capital_lstm = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted.numpy(), y_test, stock_code='LSTM')
+    final_capital_lstm = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted, y_test, strong_buy_points, strong_sell_points, stock_code='LSTM')
     print(f"Final capital after LSTM backtesting: ${final_capital_lstm:.2f}")
 
     # 使用 Focal Loss 训练 TCTS 模型
@@ -635,15 +657,15 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
         accuracy_tcts = accuracy_score(y_test, predicted_tcts.numpy())
         print(f"TCTS Test Accuracy: {accuracy_tcts}")
 
+    # 计算强买点和强卖点
+    predicted, tcts_strong_buy_points, tcts_strong_sell_points = evaluate_model(tcts_model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+
     # 进行回测
-    final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), y_test, stock_code='TCTS')
+    final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code='TCTS')
     print(f"Final capital after TCTS backtesting: ${final_capital_tcts:.2f}")
 
-    # 绘制 LSTM 模型的预测结果
-    #plot_price_with_actions(data.iloc[len(data) - len(y_test):], predicted.numpy(), "LSTM Price with Action Predictions")
-    # 绘制 TCTS 模型的预测结果
-    #plot_price_with_actions(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), "TCTS Price with Action Predictions")
-
+   
+    """
     # 创建 LSTM 和 TCTS 模型
     lstm_model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE)
     tcts_model = TCTSModel(INPUT_SIZE, OUTPUT_SIZE)
@@ -672,7 +694,7 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
             if (epoch + 1) % 10 == 0:
                 print(f"Ensemble Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
 
-    EPOCHS_ENSEMBLE = 250
+    EPOCHS_ENSEMBLE = 200
     # 训练集成模型
     train_ensemble_model(ensemble_model, X_train_torch, y_train_torch, criterion_ensemble, optimizer_ensemble, EPOCHS_ENSEMBLE, BATCH_SIZE)
 
@@ -685,5 +707,6 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
         print(f"Ensemble Test Accuracy: {accuracy_ensemble}")
 
     # 进行回测
-    final_capital_ensemble = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_ensemble.numpy(), y_test, stock_code='Ensemble')
+    final_capital_ensemble = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_ensemble.numpy(), y_test, strong_buy_points, strong_sell_points, stock_code='Ensemble')
     print(f"Final capital after Ensemble backtesting: ${final_capital_ensemble:.2f}")
+    """

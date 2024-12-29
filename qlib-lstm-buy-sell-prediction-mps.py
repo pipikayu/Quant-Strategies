@@ -384,7 +384,7 @@ def plot_price_with_actions(data, y_pred, title):
     plt.axis('equal')  # 确保 x 和 y 轴的比例相同
     plt.show()
 
-def backtest_strategy(data, predictions, actions, stock_code, initial_capital=100000, transaction_fee=0.001, model_name='Model'):
+def backtest_strategy(data, predictions, actions, stock_code, initial_capital=100000, transaction_fee=0.001, model_name='Model', strong_buy_points=None, strong_sell_points=None):
     capital = initial_capital
     position = 0  # 当前持有的股票数量
     buy_price = 0  # 记录买入价格
@@ -429,6 +429,13 @@ def backtest_strategy(data, predictions, actions, stock_code, initial_capital=10
     axs[1].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
     axs[1].scatter(action_buy_indices, data['$close'].iloc[action_buy_indices], color='red', label='Action Buy (0)', marker='o', alpha=0.5)  # 测试数据买入点
     axs[1].scatter(action_sell_indices, data['$close'].iloc[action_sell_indices], color='green', label='Action Sell (1)', marker='x', alpha=0.5)  # 测试数据卖出点
+
+    # 绘制强买点和强卖点
+    if strong_buy_points is not None:
+        axs[1].scatter(strong_buy_points, data['$close'].iloc[strong_buy_points], color='orange', label='Strong Buy', marker='o', alpha=0.7)  # 强买点
+    if strong_sell_points is not None:
+        axs[1].scatter(strong_sell_points, data['$close'].iloc[strong_sell_points], color='blue', label='Strong Sell', marker='x', alpha=0.7)  # 强卖点
+
     axs[1].set_title(f'Test Actions - {stock_code} - Buy (0) and Sell (1)')
     axs[1].set_xlabel('Time')
     axs[1].set_ylabel('Price')
@@ -436,10 +443,6 @@ def backtest_strategy(data, predictions, actions, stock_code, initial_capital=10
 
     plt.tight_layout()
     plt.show()
-
-    # 保存图形为文件
-    #plt.savefig(f'backtest_results_{stock_code}.png')  # 保存图形
-    #plt.close()  # 关闭图形以释放内存
 
     return final_value
 
@@ -506,6 +509,37 @@ class EnsembleModel(nn.Module):
         combined_output = torch.cat((lstm_output, tcts_output), dim=1)  # 拼接两个模型的输出
         final_output = self.fc(combined_output)  # 通过MLP进行最终预测
         return final_output
+
+# 定义强买点和强卖点的阈值
+STRONG_BUY_THRESHOLD = 0.95  # 强买点的阈值
+STRONG_SELL_THRESHOLD = 0.95  # 强卖点的阈值
+
+# 在模型评估中识别强买点和强卖点
+def evaluate_model(model, X_test_torch, y_test):
+    model.eval()
+    with torch.no_grad():
+        outputs = model(X_test_torch)
+        _, predicted = torch.max(outputs, 1)
+        scores = torch.softmax(outputs, dim=1)  # 计算每个类的概率
+
+        strong_buy_points = np.where((predicted.cpu().numpy() == 0) & (scores[:, 0].cpu().numpy() > STRONG_BUY_THRESHOLD))[0]
+        strong_sell_points = np.where((predicted.cpu().numpy() == 1) & (scores[:, 1].cpu().numpy() > STRONG_SELL_THRESHOLD))[0]
+
+    return predicted, strong_buy_points, strong_sell_points
+
+# 在模型评估中识别强买点和强卖点
+def evaluate_ensemble_model(model, X_test_torch, y_test):
+    model.eval()
+    with torch.no_grad():
+        outputs = model(X_test_torch)
+        _, predicted = torch.max(outputs, 1)
+        scores = torch.softmax(outputs, dim=1)  # 计算每个类的概率
+
+        strong_buy_points = np.where((predicted.cpu().numpy() == 0) & (scores[:, 0].cpu().numpy() > STRONG_BUY_THRESHOLD))[0]
+        strong_sell_points = np.where((predicted.cpu().numpy() == 1) & (scores[:, 1].cpu().numpy() > STRONG_SELL_THRESHOLD))[0]
+
+    return predicted, strong_buy_points, strong_sell_points
+
 
 if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     parser = argparse.ArgumentParser(description='Stock Code for LSTM Prediction')
@@ -583,7 +617,7 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     OUTPUT_SIZE = 3  # 三个动作：买入、卖出、持有
     EPOCHS = 200
     BATCH_SIZE = 32
-
+    """
     model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE, dropout_rate=0.1).to(device)  # 添加 dropout_rate 参数
     criterion = FocalLoss(alpha=1.0, gamma=2.0)  # 初始化 Focal Loss
     optimizer = optim.Adam(model.parameters(), lr=0.001)
@@ -618,14 +652,14 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     # 进行回测
     final_capital_lstm = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted.cpu().numpy(), y_test, stock_code='LSTM')  # Move tensor to CPU before converting to numpy
     print(f"Final capital after LSTM backtesting: ${final_capital_lstm:.2f}")
-
+    """
     # 使用 Focal Loss 训练 TCTS 模型
     tcts_model = TCTSModel(INPUT_SIZE, OUTPUT_SIZE).to(device)
     #criterion_tcts = FocalLoss(alpha=1.0, gamma=2.0)  # 使用 Focal Loss
     criterion_tcts = nn.CrossEntropyLoss()  # 修改为标准交叉熵损失
     optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
 
-    EPOCHS_TCTS = 250
+    EPOCHS_TCTS = 300
     train_tcts_model(tcts_model, X_train_torch, y_train_torch, criterion_tcts, optimizer_tcts, EPOCHS_TCTS, BATCH_SIZE)
 
     # 测试 TCTS 模型
@@ -636,14 +670,14 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
         accuracy_tcts = accuracy_score(y_test, predicted_tcts.cpu().numpy())  # Move to CPU before converting to numpy
         print(f"TCTS Test Accuracy: {accuracy_tcts}")
 
+    # 测试模型并获取强买点和强卖点
+    predicted, strong_buy_points, strong_sell_points = evaluate_model(tcts_model, X_test_torch, y_test)
+
     # 进行回测
-    final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.cpu().numpy(), y_test, stock_code='TCTS')  # Move tensor to CPU before converting to numpy
+    final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted.cpu().numpy(), y_test, stock_code='TCTS', strong_buy_points=strong_buy_points, strong_sell_points=strong_sell_points)  # Move tensor to CPU before converting to numpy
     print(f"Final capital after TCTS backtesting: ${final_capital_tcts:.2f}")
 
-    # 绘制 LSTM 模型的预测结果
-    #plot_price_with_actions(data.iloc[len(data) - len(y_test):], predicted.numpy(), "LSTM Price with Action Predictions")
-    # 绘制 TCTS 模型的预测结果
-    #plot_price_with_actions(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), "TCTS Price with Action Predictions")
+   
 
     # 创建 LSTM 和 TCTS 模型
     lstm_model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE).to(device)
@@ -685,6 +719,9 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
         accuracy_ensemble = accuracy_score(y_test, predicted_ensemble.cpu().numpy())  # 移动到 CPU 进行计算
         print(f"Ensemble Test Accuracy: {accuracy_ensemble}")
 
+    # 测试集成模型并获取强买点和强卖点
+    predicted_ensemble, strong_buy_points_ensemble, strong_sell_points_ensemble = evaluate_ensemble_model(ensemble_model, X_test_torch, y_test)
+
     # 进行回测
-    final_capital_ensemble = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_ensemble.cpu().numpy(), y_test, stock_code='Ensemble')  # Ensure tensor is on CPU before conversion
+    final_capital_ensemble = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_ensemble.cpu().numpy(), y_test, stock_code='Ensemble', strong_buy_points=strong_buy_points_ensemble, strong_sell_points=strong_sell_points_ensemble)  # Move tensor to CPU before converting to numpy
     print(f"Final capital after Ensemble backtesting: ${final_capital_ensemble:.2f}")
