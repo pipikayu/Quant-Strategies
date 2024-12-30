@@ -33,6 +33,12 @@ qlib.init(provider_uri="/Users/huiyu/Desktop/qlib_data/us_data", region=REG_CN)
 
 STRONG_BUY_THRESHOLD = 0.95
 STRONG_SELL_THRESHOLD = 0.95
+# 模型参数
+HIDDEN_SIZE = 64
+NUM_LAYERS = 2
+OUTPUT_SIZE = 3  # 三个动作：买入、卖出、持有
+EPOCHS = 150
+BATCH_SIZE = 32
 
 def get_daily_data(stock_code, start_date, end_date):
     """
@@ -415,39 +421,18 @@ def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell
 
     # 计算最终的总资产
     final_value = capital + position * data['$close'].iloc[-1]  # 加上最后持有股票的价值
-
-    # 创建图形和子图
-    fig, axs = plt.subplots(2, 1, figsize=(10, 8))
-
-    # 绘制回测结果
-    axs[0].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
-    axs[0].scatter(buy_indices, data['$close'].iloc[buy_indices], color='red', label='Buy', marker='o')  # 买入点
-    axs[0].scatter(sell_indices, data['$close'].iloc[sell_indices], color='green', label='Sell', marker='x')  # 卖出点
-    axs[0].set_title(f'Backtest Results: {model_name} - {stock_code} - Buy and Sell Points')
-    axs[0].set_xlabel('Time')
-    axs[0].set_ylabel('Price')
-    axs[0].legend()
-
-    # 绘制测试数据中的动作
-    action_buy_indices = np.where(predictions == 0)[0]  # action 为 0 的索引
-    action_sell_indices = np.where(predictions == 1)[0]  # action 为 1 的索引
-    axs[1].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
-    axs[1].scatter(action_buy_indices, data['$close'].iloc[action_buy_indices], color='red', label='Action Buy (0)', marker='o', alpha=0.5)  # 测试数据买入点
-    axs[1].scatter(action_sell_indices, data['$close'].iloc[action_sell_indices], color='green', label='Action Sell (1)', marker='x', alpha=0.5)  # 测试数据卖出点
-    
-    # 在第二个坐标图上绘制强买点和强卖点
-    axs[1].scatter(strong_buy_indices, data['$close'].iloc[strong_buy_indices], color='blue', label='Strong Buy', marker='^')  # 强买点
-    axs[1].scatter(strong_sell_indices, data['$close'].iloc[strong_sell_indices], color='orange', label='Strong Sell', marker='v')  # 强卖点
-    
-    axs[1].set_title(f'Test Actions - {stock_code} - Buy (0) and Sell (1)')
-    axs[1].set_xlabel('Time')
-    axs[1].set_ylabel('Price')
-    axs[1].legend()
-
-    plt.tight_layout()
-    plt.show()
-
     return final_value
+
+class SingleTaskLSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.3):
+        super(SingleTaskLSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        _, (hn, _) = self.lstm(x)
+        out = self.fc(hn[-1])
+        return out
 
 class TCTSModel(nn.Module):
     def __init__(self, input_size, output_size):
@@ -534,6 +519,96 @@ def evaluate_model(model, X_test, strong_buy_threshold, strong_sell_threshold):
 
     return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy()
 
+def ab_test_models(X_train, y_train, X_test, y_test, input_size, output_size, epochs=150, batch_size=32):
+    lstm_accuracies = []
+    lstm_final_capitals = []
+    tcts_accuracies = []
+    tcts_final_capitals = []
+
+    rounds = 5
+    for i in range(rounds):
+        # 训练 LSTM 模型
+        print(f"Training LSTM Model {i+1} round of {rounds}")
+        lstm_model = SingleTaskLSTMModel(input_size, 64, 2, output_size)
+        criterion = FocalLoss(alpha=1.0, gamma=2.0)
+        optimizer = optim.Adam(lstm_model.parameters(), lr=0.001)
+        train_model(lstm_model, X_train, y_train, criterion, optimizer, epochs, batch_size)
+
+        # 测试 LSTM 模型
+        lstm_model.eval()
+        with torch.no_grad():
+            outputs = lstm_model(X_test)
+            _, predicted = torch.max(outputs, 1)
+            accuracy = accuracy_score(y_test.numpy(), predicted.numpy())
+            lstm_accuracies.append(accuracy)
+
+        # 回测 LSTM 模型
+        predicted, strong_buy_points, strong_sell_points = evaluate_model(lstm_model, X_test, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted, y_test, strong_buy_points, strong_sell_points, stock_code='LSTM')
+        lstm_final_capitals.append(final_capital)
+
+        # 训练 TCTS 模型
+        tcts_model = TCTSModel(input_size, output_size)
+        criterion_tcts = nn.CrossEntropyLoss()
+        optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
+        train_tcts_model(tcts_model, X_train, y_train, criterion_tcts, optimizer_tcts, epochs, batch_size)
+
+        # 测试 TCTS 模型
+        tcts_model.eval()
+        with torch.no_grad():
+            outputs_tcts = tcts_model(X_test)
+            _, predicted_tcts = torch.max(outputs_tcts, 1)
+            accuracy_tcts = accuracy_score(y_test.numpy(), predicted_tcts.numpy())
+            tcts_accuracies.append(accuracy_tcts)
+
+        # 回测 TCTS 模型
+        predicted_tcts, tcts_strong_buy_points, tcts_strong_sell_points = evaluate_model(tcts_model, X_test, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts, y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code='TCTS')
+        tcts_final_capitals.append(final_capital_tcts)
+
+    # 输出结果
+    print("LSTM Model Accuracies:", lstm_accuracies)
+    print("LSTM Model Final Capitals:", lstm_final_capitals)
+    print("TCTS Model Accuracies:", tcts_accuracies)
+    print("TCTS Model Final Capitals:", tcts_final_capitals)
+
+    # 计算稳定性
+    lstm_stability = np.std(lstm_accuracies)
+    tcts_stability = np.std(tcts_accuracies)
+
+    # 计算均值
+    lstm_accuracy_mean = np.mean(lstm_accuracies)
+    lstm_final_capital_mean = np.mean(lstm_final_capitals)
+    tcts_accuracy_mean = np.mean(tcts_accuracies)
+    tcts_final_capital_mean = np.mean(tcts_final_capitals)
+
+    print(f"LSTM Stability (Std Dev of Accuracies): {lstm_stability}")
+    print(f"TCTS Stability (Std Dev of Accuracies): {tcts_stability}")
+
+    # 输出均值
+    print(f"LSTM Mean Accuracy: {lstm_accuracy_mean}")
+    print(f"LSTM Mean Final Capital: {lstm_final_capital_mean}")
+    print(f"TCTS Mean Accuracy: {tcts_accuracy_mean}")
+    print(f"TCTS Mean Final Capital: {tcts_final_capital_mean}")
+
+    return lstm_accuracies, lstm_final_capitals, tcts_accuracies, tcts_final_capitals
+
+def train_model(model, X_train, y_train, criterion, optimizer, epochs, batch_size):
+    model.train()
+    for epoch in range(epochs):
+        for i in range(0, len(X_train), batch_size):
+            X_batch = X_train[i:i + batch_size]
+            y_batch = y_train[i:i + batch_size]
+
+            optimizer.zero_grad()
+            outputs = model(X_batch)
+            loss = criterion(outputs, y_batch)
+            loss.backward()
+            optimizer.step()
+
+        if (epoch + 1) % 10 == 0:
+            print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
+
 if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     parser = argparse.ArgumentParser(description='Stock Code for LSTM Prediction')
     parser.add_argument('--stock_code', type=str, default='BABA', help='Stock code to analyze (default: BABA)')
@@ -590,131 +665,8 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     X_test_torch = torch.tensor(X_test, dtype=torch.float32)
     y_test_torch = torch.tensor(y_test, dtype=torch.long)
 
-    # 用于动作预测的单任务LSTM模型
-    class SingleTaskLSTMModel(nn.Module):
-        def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.3):
-            super(SingleTaskLSTMModel, self).__init__()
-            self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
-            self.fc = nn.Linear(hidden_size, output_size)
-
-        def forward(self, x):
-            _, (hn, _) = self.lstm(x)
-            out = self.fc(hn[-1])
-            return out
-
     # 模型参数
     INPUT_SIZE = X_train.shape[2]
-    HIDDEN_SIZE = 64
-    NUM_LAYERS = 2
-    OUTPUT_SIZE = 3  # 三个动作：买入、卖出、持有
-    EPOCHS = 150
-    BATCH_SIZE = 32
-
-    model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE, dropout_rate=0.1)  # 添加 dropout_rate 参数
-    criterion = FocalLoss(alpha=1.0, gamma=2.0)  # 初始化 Focal Loss
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # 训练模型
-    def train_model(model, X_train, y_train, criterion, optimizer, epochs, batch_size):
-        model.train()
-        for epoch in range(epochs):
-            for i in range(0, len(X_train), batch_size):
-                X_batch = X_train[i:i + batch_size]
-                y_batch = y_train[i:i + batch_size]
-
-                optimizer.zero_grad()
-                outputs = model(X_batch)
-                loss = criterion(outputs, y_batch)
-                loss.backward()
-                optimizer.step()
-
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
-
-    train_model(model, X_train_torch, y_train_torch, criterion, optimizer, EPOCHS, BATCH_SIZE)
-
-    # 测试模型
-    model.eval()
-    with torch.no_grad():
-        outputs = model(X_test_torch)
-        _, predicted = torch.max(outputs, 1)
-        accuracy = accuracy_score(y_test, predicted.numpy())
-        print(f"Test Accuracy: {accuracy}")
-
-    # 在模型评估中调用
-    predicted, strong_buy_points, strong_sell_points = evaluate_model(model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
-
-    # 进行回测
-    final_capital_lstm = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted, y_test, strong_buy_points, strong_sell_points, stock_code='LSTM')
-    print(f"Final capital after LSTM backtesting: ${final_capital_lstm:.2f}")
-
-    # 使用 Focal Loss 训练 TCTS 模型
-    tcts_model = TCTSModel(INPUT_SIZE, OUTPUT_SIZE)
-    #criterion_tcts = FocalLoss(alpha=1.0, gamma=2.0)  # 使用 Focal Loss
-    criterion_tcts = nn.CrossEntropyLoss()  # 修改为标准交叉熵损失
-    optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
-
-    EPOCHS_TCTS = 150
-    train_tcts_model(tcts_model, X_train_torch, y_train_torch, criterion_tcts, optimizer_tcts, EPOCHS_TCTS, BATCH_SIZE)
-
-    # 测试 TCTS 模型
-    tcts_model.eval()
-    with torch.no_grad():
-        outputs_tcts = tcts_model(X_test_torch)
-        _, predicted_tcts = torch.max(outputs_tcts, 1)
-        accuracy_tcts = accuracy_score(y_test, predicted_tcts.numpy())
-        print(f"TCTS Test Accuracy: {accuracy_tcts}")
-
-    # 计算强买点和强卖点
-    predicted, tcts_strong_buy_points, tcts_strong_sell_points = evaluate_model(tcts_model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
-
-    # 进行回测
-    final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code='TCTS')
-    print(f"Final capital after TCTS backtesting: ${final_capital_tcts:.2f}")
-
-   
-    """
-    # 创建 LSTM 和 TCTS 模型
-    lstm_model = SingleTaskLSTMModel(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, OUTPUT_SIZE)
-    tcts_model = TCTSModel(INPUT_SIZE, OUTPUT_SIZE)
-
-    # 创建集成模型
-    ensemble_model = EnsembleModel(lstm_model, tcts_model, INPUT_SIZE, OUTPUT_SIZE)
-
-    # 定义损失函数和优化器
-    criterion_ensemble = FocalLoss(alpha=1.0, gamma=2.0)
-    optimizer_ensemble = optim.Adam(ensemble_model.parameters(), lr=0.001)
-
-    # 训练集成模型
-    def train_ensemble_model(model, X_train, y_train, criterion, optimizer, epochs, batch_size):
-        model.train()
-        for epoch in range(epochs):
-            for i in range(0, len(X_train), batch_size):
-                X_batch = X_train[i:i + batch_size]
-                y_batch = y_train[i:i + batch_size]
-
-                optimizer.zero_grad()
-                outputs = model(X_batch)
-                loss = criterion(outputs, y_batch)
-                loss.backward()
-                optimizer.step()
-
-            if (epoch + 1) % 10 == 0:
-                print(f"Ensemble Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
-
-    EPOCHS_ENSEMBLE = 200
-    # 训练集成模型
-    train_ensemble_model(ensemble_model, X_train_torch, y_train_torch, criterion_ensemble, optimizer_ensemble, EPOCHS_ENSEMBLE, BATCH_SIZE)
-
-    # 测试集成模型
-    ensemble_model.eval()
-    with torch.no_grad():
-        outputs_ensemble = ensemble_model(X_test_torch)
-        _, predicted_ensemble = torch.max(outputs_ensemble, 1)
-        accuracy_ensemble = accuracy_score(y_test, predicted_ensemble.numpy())
-        print(f"Ensemble Test Accuracy: {accuracy_ensemble}")
-
-    # 进行回测
-    final_capital_ensemble = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_ensemble.numpy(), y_test, strong_buy_points, strong_sell_points, stock_code='Ensemble')
-    print(f"Final capital after Ensemble backtesting: ${final_capital_ensemble:.2f}")
-    """
+ 
+    # A/B 测试
+    ab_test_models(X_train_torch, y_train_torch, X_test_torch, y_test_torch, INPUT_SIZE, OUTPUT_SIZE)
