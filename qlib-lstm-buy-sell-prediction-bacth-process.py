@@ -394,7 +394,7 @@ def plot_price_with_actions(data, y_pred, title):
     plt.axis('equal')  # 确保 x 和 y 轴的比例相同
     plt.show()
 
-def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.0005, model_name='Model', folder_path=''):
+def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.005, model_name='Model', folder_path=''):
     capital = initial_capital
     position = 0  # 当前持有的股票数量
     buy_price = 0  # 记录买入价格
@@ -541,27 +541,29 @@ def evaluate_model(model, X_test, strong_buy_threshold, strong_sell_threshold):
         scores = torch.softmax(outputs, dim=1)  # 计算每个动作的概率
         _, predicted = torch.max(outputs, 1)
 
+        buy_points = (predicted == 0)
+        sell_points = (predicted == 1)
         strong_buy_points = (predicted == 0) & (scores[:, 0] > strong_buy_threshold)  # 强买点
         strong_sell_points = (predicted == 1) & (scores[:, 1] > strong_sell_threshold)  # 强卖点
 
-    return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy()
+    return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy(), buy_points.numpy(), sell_points.numpy()
 
 # 在回测后添加逻辑来记录潜力买卖股票
-def record_signals(stock_code, strong_buy_points, strong_sell_points, recent_predictions):
+def record_signals(stock_code, strong_buy_points, strong_sell_points, recent_predictions, buy_points, sell_points):
     potential_buy_stocks = []  # 潜力买入股票
     potential_sell_stocks = []  # 潜力卖出股票
     strong_buy_stocks = []
     strong_sell_stocks = []
 
     # 检查最近一天的买点和卖点
-    if strong_buy_points[-1]:  # 最近一天有买点
+    if buy_points[-1]:  # 最近一天有买点
         potential_buy_stocks.append(stock_code)
-    if strong_sell_points[-1]:  # 最近一天有卖点
+    if sell_points[-1]:  # 最近一天有卖点
         potential_sell_stocks.append(stock_code)
 
     # 检查最近5天的买点和卖点
-    recent_buy_signals = sum(strong_buy_points[-5:])  # 最近5天的买点数量
-    recent_sell_signals = sum(strong_sell_points[-5:])  # 最近5天的卖点数量
+    recent_buy_signals = sum(buy_points[-5:])  # 最近5天的买点数量
+    recent_sell_signals = sum(sell_points[-5:])  # 最近5天的卖点数量
 
     if recent_buy_signals >= 3 and recent_sell_signals == 0:
         strong_buy_stocks.append(stock_code)
@@ -593,8 +595,10 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
     end_date = "2024-12-30"  # Set your desired end date
 
     # 3. 增加stock_list
-    stock_list = ["BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","ALXN","AMGN","AMZN","BABA","BIDU","BILI","BRK.B","DIS","GILD","GOOGL","JD","LI","META","MSFT","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","PEP","COST","CSCO","ORCL","AMD","UPS","TME","TSLA","XPEV"]
+    stock_list = ["UNG","TLT","BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","AMGN","AMZN","BABA","BIDU","BILI","DIS","GILD","GOOGL","JD","LI","META","MSFT","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","PEP","COST","CSCO","ORCL","AMD","UPS","TME","TSLA","XPEV"]
     listing_dates = {
+        "UNG": "2007-04-18",
+        "TLT": "2002-07-22",
         "BEKE": "2020-08-13",
         "GOLD": "1983-05-02",
         "RIOT": "2003-10-24",
@@ -765,13 +769,13 @@ if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
             print(f"TCTS Test Accuracy for {stock_code}: {accuracy_tcts}")
 
         # 计算强买点和强卖点
-        predicted, tcts_strong_buy_points, tcts_strong_sell_points = evaluate_model(tcts_model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        predicted, tcts_strong_buy_points, tcts_strong_sell_points, tcts_buy_points, tcts_sell_points = evaluate_model(tcts_model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
 
         # 进行回测
         final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code=stock_code, folder_path=folder_path)
 
         # 记录信号
-        potential_buy_stocks, potential_sell_stocks, strong_buy_stocks, strong_sell_stocks = record_signals(stock_code, tcts_strong_buy_points, tcts_strong_sell_points, predicted_tcts)
+        potential_buy_stocks, potential_sell_stocks, strong_buy_stocks, strong_sell_stocks = record_signals(stock_code, tcts_strong_buy_points, tcts_strong_sell_points, predicted_tcts, tcts_buy_points, tcts_sell_points)
 
         # 将信号写入到 signal.txt 文件
         with open(f"{base_folder_path}signal.txt", 'a') as signal_file:

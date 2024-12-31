@@ -224,6 +224,19 @@ def calculate_golden_cross(data, short_window=50, long_window=200):
 
     return data[['golden_cross', 'death_cross']]
 
+def calculate_gann_line(data, start_price, start_time, end_time):
+    """
+    计算江恩线因子
+    """
+    # 计算时间和价格的斜率
+    time_range = end_time - start_time
+    price_range = data['$close'].iloc[end_time] - start_price
+    slope = price_range / time_range if time_range != 0 else 0
+
+    # 生成江恩线
+    gann_line = start_price + slope * (data.index - start_time)
+    return gann_line
+
 def get_daily_data_with_factors(stock_code, start_date, end_date):
     """
     获取指定股票的日线数据和 Alpha158 因子
@@ -268,9 +281,6 @@ def get_daily_data_with_factors(stock_code, start_date, end_date):
     # 计算 Stochastic K 并添加到数据框
     df['Stoch_K'] = calculate_stoch_k(df)  # 新增 Stochastic K 因子
   
-    # 计算布林带并添加到数据框
-    #df['upper_band'], t2, df['lower_band'] = calculate_bollinger_bands(df)
-
     # 计算 ATR 并添加到数据框
     df['ATR'] = calculate_atr(df)
     
@@ -392,7 +402,7 @@ def plot_price_with_actions(data, y_pred, title):
     plt.axis('equal')  # 确保 x 和 y 轴的比例相同
     plt.show()
 
-def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.0005, model_name='Model'):
+def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.005, model_name='Model'):
     capital = initial_capital
     position = 0  # 当前持有的股票数量
     buy_price = 0  # 记录买入价格
@@ -524,6 +534,8 @@ def ab_test_models(X_train, y_train, X_test, y_test, input_size, output_size, ep
     lstm_final_capitals = []
     tcts_accuracies = []
     tcts_final_capitals = []
+    tcts_focal_accuracies = []  # 新增：Focal Loss TCTS 模型准确率
+    tcts_focal_final_capitals = []  # 新增：Focal Loss TCTS 模型最终资本
 
     rounds = 5
     for i in range(rounds):
@@ -547,6 +559,9 @@ def ab_test_models(X_train, y_train, X_test, y_test, input_size, output_size, ep
         final_capital = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted, y_test, strong_buy_points, strong_sell_points, stock_code='LSTM')
         lstm_final_capitals.append(final_capital)
 
+        # 释放 LSTM 模型
+        del lstm_model, outputs, predicted
+
         # 训练 TCTS 模型
         tcts_model = TCTSModel(input_size, output_size)
         criterion_tcts = nn.CrossEntropyLoss()
@@ -566,32 +581,65 @@ def ab_test_models(X_train, y_train, X_test, y_test, input_size, output_size, ep
         final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts, y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code='TCTS')
         tcts_final_capitals.append(final_capital_tcts)
 
+        # 释放 TCTS 模型
+        del tcts_model, outputs_tcts, predicted_tcts
+
+        # 新增：训练使用 Focal Loss 的 TCTS 模型
+        tcts_focal_model = TCTSModel(input_size, output_size)
+        criterion_tcts_focal = FocalLoss(alpha=1.0, gamma=2.0)  # 使用 Focal Loss
+        optimizer_tcts_focal = optim.Adam(tcts_focal_model.parameters(), lr=0.001)
+        train_tcts_model(tcts_focal_model, X_train, y_train, criterion_tcts_focal, optimizer_tcts_focal, epochs, batch_size)
+
+        # 测试 Focal Loss TCTS 模型
+        tcts_focal_model.eval()
+        with torch.no_grad():
+            outputs_tcts_focal = tcts_focal_model(X_test)
+            _, predicted_tcts_focal = torch.max(outputs_tcts_focal, 1)
+            accuracy_tcts_focal = accuracy_score(y_test.numpy(), predicted_tcts_focal.numpy())
+            tcts_focal_accuracies.append(accuracy_tcts_focal)
+
+        # 回测 Focal Loss TCTS 模型
+        predicted_tcts_focal, tcts_focal_strong_buy_points, tcts_focal_strong_sell_points = evaluate_model(tcts_focal_model, X_test, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital_tcts_focal = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts_focal, y_test, tcts_focal_strong_buy_points, tcts_focal_strong_sell_points, stock_code='TCTS_Focal')
+        tcts_focal_final_capitals.append(final_capital_tcts_focal)
+
+        # 释放 Focal Loss TCTS 模型
+        del tcts_focal_model, outputs_tcts_focal, predicted_tcts_focal
+
     # 输出结果
     print("LSTM Model Accuracies:", lstm_accuracies)
     print("LSTM Model Final Capitals:", lstm_final_capitals)
     print("TCTS Model Accuracies:", tcts_accuracies)
     print("TCTS Model Final Capitals:", tcts_final_capitals)
+    print("Focal Loss TCTS Model Accuracies:", tcts_focal_accuracies)  # 新增：输出 Focal Loss TCTS 模型准确率
+    print("Focal Loss TCTS Model Final Capitals:", tcts_focal_final_capitals)  # 新增：输出 Focal Loss TCTS 模型最终资本
 
     # 计算稳定性
     lstm_stability = np.std(lstm_accuracies)
     tcts_stability = np.std(tcts_accuracies)
+    tcts_focal_stability = np.std(tcts_focal_accuracies)  # 新增：Focal Loss TCTS 模型稳定性
 
     # 计算均值
     lstm_accuracy_mean = np.mean(lstm_accuracies)
     lstm_final_capital_mean = np.mean(lstm_final_capitals)
     tcts_accuracy_mean = np.mean(tcts_accuracies)
     tcts_final_capital_mean = np.mean(tcts_final_capitals)
+    tcts_focal_accuracy_mean = np.mean(tcts_focal_accuracies)  # 新增：Focal Loss TCTS 模型均值
+    tcts_focal_final_capital_mean = np.mean(tcts_focal_final_capitals)  # 新增：Focal Loss TCTS 模型均值
 
     print(f"LSTM Stability (Std Dev of Accuracies): {lstm_stability}")
     print(f"TCTS Stability (Std Dev of Accuracies): {tcts_stability}")
+    print(f"TCTS Focal Loss Stability (Std Dev of Accuracies): {tcts_focal_stability}")  # 新增：Focal Loss TCTS 模型稳定性
 
     # 输出均值
     print(f"LSTM Mean Accuracy: {lstm_accuracy_mean}")
     print(f"LSTM Mean Final Capital: {lstm_final_capital_mean}")
     print(f"TCTS Mean Accuracy: {tcts_accuracy_mean}")
     print(f"TCTS Mean Final Capital: {tcts_final_capital_mean}")
+    print(f"TCTS Focal Loss Mean Accuracy: {tcts_focal_accuracy_mean}")  # 新增：输出 Focal Loss TCTS 模型均值
+    print(f"TCTS Focal Loss Mean Final Capital: {tcts_focal_final_capital_mean}")  # 新增：输出 Focal Loss TCTS 模型均值
 
-    return lstm_accuracies, lstm_final_capitals, tcts_accuracies, tcts_final_capitals
+    return lstm_accuracies, lstm_final_capitals, tcts_accuracies, tcts_final_capitals, tcts_focal_accuracies, tcts_focal_final_capitals  # 新增：返回 Focal Loss TCTS 模型的结果
 
 def train_model(model, X_train, y_train, criterion, optimizer, epochs, batch_size):
     model.train()
