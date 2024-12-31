@@ -1,12 +1,10 @@
 import yfinance as yf
 import pandas as pd
+from datetime import datetime
 
 def fetch_and_save_stock_data(stock_symbols, start_date, end_date):
     # 下载多支股票的数据
     stock_data = yf.download(stock_symbols, start=start_date, end=end_date)
-    
-    # 重置索引，以便将日期列变为普通列
-#stock_data.reset_index(inplace=True)
 
     # 遍历每个股票符号，分开存储
     for symbol in stock_symbols:
@@ -27,14 +25,10 @@ def fetch_and_save_stock_data(stock_symbols, start_date, end_date):
         
         print(f"Data for {symbol} saved to {individual_output_file}")
 
-# 示例调用
-#symbols = ["AAPL", "MSFT", "GOOGL"]  # 需要下载的股票符号
-#start_date = "2023-01-01"
-#end_date = "2023-01-10"
 
 #symbols = ["IQ","ASHR", "LI", "KWEB", "MPNGY", "BIDU", "TSLA", "NVDA", "BABA", "TCEHY", "PDD", "JD", "NIO", "TQQQ", "SOXL", "OXY", "TAL", "FUTU","BILI"]
-symbols = ["DIDIY","BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","ALXN","AMGN","AMZN","BABA","BIDU","BIIB","BILI","BRK.B","DIS","GILD","GOOGL","HD","ILMN","INCY","INTC","JD","JNJ","JPM","LI","META","MSFT","NBIX","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","REGN","SGEN","PEP","KO","COST","T","CMCSA","MCD","CVX","XOM","CSCO","ORCL","ABT","ABBV","DHR","ACN","ADBE","CRM","TXN","AMD","QCOM","HON","LIN","PM","NEE","LOW","MDT","BKNG","AMT","UPS","NKE","C","SCHW","TME","TSLA","UNH","V","VRTX","WMT","XPEV"]
+symbols = ["UNG","TLT","DIDIY","BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","ALXN","AMGN","AMZN","BABA","BIDU","BIIB","BILI","BRK.B","DIS","GILD","GOOGL","HD","ILMN","INCY","INTC","JD","JNJ","JPM","LI","META","MSFT","NBIX","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","REGN","SGEN","PEP","KO","COST","T","CMCSA","MCD","CVX","XOM","CSCO","ORCL","ABT","ABBV","DHR","ACN","ADBE","CRM","TXN","AMD","QCOM","HON","LIN","PM","NEE","LOW","MDT","BKNG","AMT","UPS","NKE","C","SCHW","TME","TSLA","UNH","V","VRTX","WMT","XPEV"]
 start_date = '2015-01-01'
-end_date = '2024-12-31'
+end_date = datetime.now().strftime("%Y-%m-%d")  # Updated to use today's date
 
 fetch_and_save_stock_data(symbols, start_date, end_date)

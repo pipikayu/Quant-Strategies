@@ -19,9 +19,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, accuracy_score
 
 # 数据可视化
-import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('Agg')  # 使用非 GUI 后端
 import logging  # 新增导入日志模块
 import os
 from datetime import datetime
@@ -35,7 +33,7 @@ qlib.init(provider_uri="/Users/huiyu/Desktop/qlib_data/us_data", region=REG_CN)
 
 STRONG_BUY_THRESHOLD = 0.95
 STRONG_SELL_THRESHOLD = 0.95
-
+# 模型参数
 HIDDEN_SIZE = 64
 NUM_LAYERS = 2
 OUTPUT_SIZE = 3  # 三个动作：买入、卖出、持有
@@ -226,6 +224,19 @@ def calculate_golden_cross(data, short_window=50, long_window=200):
 
     return data[['golden_cross', 'death_cross']]
 
+def calculate_gann_line(data, start_price, start_time, end_time):
+    """
+    计算江恩线因子
+    """
+    # 计算时间和价格的斜率
+    time_range = end_time - start_time
+    price_range = data['$close'].iloc[end_time] - start_price
+    slope = price_range / time_range if time_range != 0 else 0
+
+    # 生成江恩线
+    gann_line = start_price + slope * (data.index - start_time)
+    return gann_line
+
 def get_daily_data_with_factors(stock_code, start_date, end_date):
     """
     获取指定股票的日线数据和 Alpha158 因子
@@ -394,7 +405,7 @@ def plot_price_with_actions(data, y_pred, title):
     plt.axis('equal')  # 确保 x 和 y 轴的比例相同
     plt.show()
 
-def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.005, model_name='Model', folder_path=''):
+def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell_points, stock_code, initial_capital=100000, transaction_fee=0.005, model_name='Model'):
     capital = initial_capital
     position = 0  # 当前持有的股票数量
     buy_price = 0  # 记录买入价格
@@ -423,43 +434,18 @@ def backtest_strategy(data, predictions, actions, strong_buy_points, strong_sell
 
     # 计算最终的总资产
     final_value = capital + position * data['$close'].iloc[-1]  # 加上最后持有股票的价值
-
-    # 创建图形和子图
-    fig, axs = plt.subplots(2, 1, figsize=(10, 8))
-
-    # 绘制回测结果
-    axs[0].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
-    axs[0].scatter(buy_indices, data['$close'].iloc[buy_indices], color='red', label='Buy', marker='o')  # 买入点
-    axs[0].scatter(sell_indices, data['$close'].iloc[sell_indices], color='green', label='Sell', marker='x')  # 卖出点
-    axs[0].set_title(f'Backtest Results: {model_name} - {stock_code} - Buy and Sell Points')
-    axs[0].set_xlabel('Time')
-    axs[0].set_ylabel('Price')
-    axs[0].legend()
-
-    # 绘制测试数据中的动作
-    action_buy_indices = np.where(predictions == 0)[0]  # action 为 0 的索引
-    action_sell_indices = np.where(predictions == 1)[0]  # action 为 1 的索引
-    axs[1].plot(data['$close'].values, label='Price', color='blue', alpha=0.5)  # 绘制股价
-    axs[1].scatter(action_buy_indices, data['$close'].iloc[action_buy_indices], color='red', label='Action Buy (0)', marker='o', alpha=0.5)  # 测试数据买入点
-    axs[1].scatter(action_sell_indices, data['$close'].iloc[action_sell_indices], color='green', label='Action Sell (1)', marker='x', alpha=0.5)  # 测试数据卖出点
-    
-    # 在第二个坐标图上绘制强买点和强卖点
-    axs[1].scatter(strong_buy_indices, data['$close'].iloc[strong_buy_indices], color='blue', label='Strong Buy', marker='^')  # 强买点
-    axs[1].scatter(strong_sell_indices, data['$close'].iloc[strong_sell_indices], color='orange', label='Strong Sell', marker='v')  # 强卖点
-    
-    axs[1].set_title(f'Test Actions - {stock_code} - Buy (0) and Sell (1)')
-    axs[1].set_xlabel('Time')
-    axs[1].set_ylabel('Price')
-    axs[1].legend()
-
-    plt.tight_layout()
-
-    # 保存回测结果的图片到每个股票对应的文件夹
-    plot_filename = f"{folder_path}{stock_code}_{datetime.now().strftime('%Y-%m-%d')}.png"
-    plt.savefig(plot_filename)  # 保存回测结果的图片
-    plt.close()  # 关闭图形以释放内存
-
     return final_value
+
+class SingleTaskLSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.3):
+        super(SingleTaskLSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        _, (hn, _) = self.lstm(x)
+        out = self.fc(hn[-1])
+        return out
 
 class TCTSModel(nn.Module):
     def __init__(self, input_size, output_size):
@@ -541,38 +527,126 @@ def evaluate_model(model, X_test, strong_buy_threshold, strong_sell_threshold):
         scores = torch.softmax(outputs, dim=1)  # 计算每个动作的概率
         _, predicted = torch.max(outputs, 1)
 
-        buy_points = (predicted == 0)
-        sell_points = (predicted == 1)
         strong_buy_points = (predicted == 0) & (scores[:, 0] > strong_buy_threshold)  # 强买点
         strong_sell_points = (predicted == 1) & (scores[:, 1] > strong_sell_threshold)  # 强卖点
 
-    return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy(), buy_points.numpy(), sell_points.numpy()
+    return predicted.numpy(), strong_buy_points.numpy(), strong_sell_points.numpy()
 
-# 在回测后添加逻辑来记录潜力买卖股票
-def record_signals(stock_code, strong_buy_points, strong_sell_points, recent_predictions, buy_points, sell_points):
-    potential_buy_stocks = []  # 潜力买入股票
-    potential_sell_stocks = []  # 潜力卖出股票
-    strong_buy_stocks = []
-    strong_sell_stocks = []
+def ab_test_models(X_train_short, y_train_short, X_test_short, y_test_short, X_train_middle, y_train_middle, X_test_middle, y_test_middle, input_size, output_size, epochs=150, batch_size=32):
+    tcts_accuracies = []
+    tcts_final_capitals = []
+    tcts_focal_accuracies = []
+    tcts_focal_final_capitals = []
+    tcts_focal_middle_accuracies = []  # New list for the new model
+    tcts_focal_middle_final_capitals = []  # New list for the new model
 
-    # 检查最近一天的买点和卖点
-    if buy_points[-1]:  # 最近一天有买点
-        potential_buy_stocks.append(stock_code)
-    if sell_points[-1]:  # 最近一天有卖点
-        potential_sell_stocks.append(stock_code)
+    rounds = 5
+    for i in range(rounds):
+        # 训练 TCTS 模型（基于短期动作目标）
+        print(f"Training TCTS Model for round {i+1}...")
+        tcts_model = TCTSModel(input_size, output_size)
+        criterion_tcts = nn.CrossEntropyLoss()
+        optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
+        train_tcts_model(tcts_model, X_train_short, y_train_short, criterion_tcts, optimizer_tcts, 1, batch_size)
 
-    # 检查最近5天的买点和卖点
-    recent_buy_signals = sum(buy_points[-5:])  # 最近5天的买点数量
-    recent_sell_signals = sum(sell_points[-5:])  # 最近5天的卖点数量
+        # 测试 TCTS 模型
+        tcts_model.eval()
+        with torch.no_grad():
+            outputs_tcts = tcts_model(X_test_short)
+            _, predicted_tcts = torch.max(outputs_tcts, 1)
+            accuracy_tcts = accuracy_score(y_test_short.numpy(), predicted_tcts.numpy())
+            tcts_accuracies.append(accuracy_tcts)
 
-    if recent_buy_signals >= 3 and recent_sell_signals == 0:
-        strong_buy_stocks.append(stock_code)
-    if recent_sell_signals >= 3 and recent_buy_signals == 0:
-        strong_sell_stocks.append(stock_code)
+        # 回测 TCTS 模型
+        predicted_tcts, tcts_strong_buy_points, tcts_strong_sell_points = evaluate_model(tcts_model, X_test_short, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test_short):], predicted_tcts, y_test_short, tcts_strong_buy_points, tcts_strong_sell_points, stock_code='TCTS')
+        tcts_final_capitals.append(final_capital_tcts)
 
-    return potential_buy_stocks, potential_sell_stocks, strong_buy_stocks, strong_sell_stocks
+        # 释放 TCTS 模型
+        del tcts_model, outputs_tcts, predicted_tcts
 
-# 移动到外部的函数
+        # 训练使用 Focal Loss 的 TCTS 模型（基于短期动作目标）
+        tcts_focal_model = TCTSModel(input_size, output_size)
+        criterion_tcts_focal = FocalLoss(alpha=1.0, gamma=2.0)
+        optimizer_tcts_focal = optim.Adam(tcts_focal_model.parameters(), lr=0.001)
+        train_tcts_model(tcts_focal_model, X_train_short, y_train_short, criterion_tcts_focal, optimizer_tcts_focal, epochs, batch_size)
+
+        # 测试 Focal Loss TCTS 模型
+        tcts_focal_model.eval()
+        with torch.no_grad():
+            outputs_tcts_focal = tcts_focal_model(X_test_short)
+            _, predicted_tcts_focal = torch.max(outputs_tcts_focal, 1)
+            accuracy_tcts_focal = accuracy_score(y_test_short.numpy(), predicted_tcts_focal.numpy())
+            tcts_focal_accuracies.append(accuracy_tcts_focal)
+
+        # 回测 Focal Loss TCTS 模型
+        predicted_tcts_focal, tcts_focal_strong_buy_points, tcts_focal_strong_sell_points = evaluate_model(tcts_focal_model, X_test_short, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital_tcts_focal = backtest_strategy(data.iloc[len(data) - len(y_test_short):], predicted_tcts_focal, y_test_short, tcts_focal_strong_buy_points, tcts_focal_strong_sell_points, stock_code='TCTS_Focal')
+        tcts_focal_final_capitals.append(final_capital_tcts_focal)
+
+        # 释放 Focal Loss TCTS 模型
+        del tcts_focal_model, outputs_tcts_focal, predicted_tcts_focal
+
+        # 新增模型：使用 Focal Loss 的 TCTS 模型，action 目标为 middle_term_calculate_action
+        print(f"Training TCTS Focal Loss Model with Middle Term Actions for round {i+1}...")
+        tcts_focal_middle_model = TCTSModel(input_size, output_size)
+        criterion_tcts_focal_middle = FocalLoss(alpha=1.0, gamma=2.0)
+        optimizer_tcts_focal_middle = optim.Adam(tcts_focal_middle_model.parameters(), lr=0.001)
+
+        # 使用中期动作目标进行训练
+        train_tcts_model(tcts_focal_middle_model, X_train_middle, y_train_middle, criterion_tcts_focal_middle, optimizer_tcts_focal_middle, epochs, batch_size)
+
+        # 测试新模型
+        tcts_focal_middle_model.eval()
+        with torch.no_grad():
+            outputs_tcts_focal_middle = tcts_focal_middle_model(X_test_middle)
+            _, predicted_tcts_focal_middle = torch.max(outputs_tcts_focal_middle, 1)
+            accuracy_tcts_focal_middle = accuracy_score(y_test_middle.numpy(), predicted_tcts_focal_middle.numpy())
+            tcts_focal_middle_accuracies.append(accuracy_tcts_focal_middle)
+
+        # 回测新模型
+        predicted_tcts_focal_middle, tcts_focal_middle_strong_buy_points, tcts_focal_middle_strong_sell_points = evaluate_model(tcts_focal_middle_model, X_test_middle, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
+        final_capital_tcts_focal_middle = backtest_strategy(data.iloc[len(data) - len(y_test_middle):], predicted_tcts_focal_middle, y_test_middle, tcts_focal_middle_strong_buy_points, tcts_focal_middle_strong_sell_points, stock_code='TCTS_Focal_Middle')
+        tcts_focal_middle_final_capitals.append(final_capital_tcts_focal_middle)
+
+        # 释放新模型
+        del tcts_focal_middle_model, outputs_tcts_focal_middle, predicted_tcts_focal_middle
+
+    # 输出结果
+    print("TCTS Model Accuracies:", tcts_accuracies)
+    print("TCTS Model Final Capitals:", tcts_final_capitals)
+    print("Focal Loss TCTS Model Accuracies:", tcts_focal_accuracies)
+    print("Focal Loss TCTS Model Final Capitals:", tcts_focal_final_capitals)
+    print("Focal Loss TCTS Middle Term Model Accuracies:", tcts_focal_middle_accuracies)
+    print("Focal Loss TCTS Middle Term Model Final Capitals:", tcts_focal_middle_final_capitals)
+
+    # 计算稳定性
+    tcts_stability = np.std(tcts_accuracies)
+    tcts_focal_stability = np.std(tcts_focal_accuracies)
+    tcts_focal_middle_stability = np.std(tcts_focal_middle_accuracies)
+
+    # 计算均值
+    tcts_accuracy_mean = np.mean(tcts_accuracies)
+    tcts_final_capital_mean = np.mean(tcts_final_capitals)
+    tcts_focal_accuracy_mean = np.mean(tcts_focal_accuracies)
+    tcts_focal_final_capital_mean = np.mean(tcts_focal_final_capitals)
+    tcts_focal_middle_accuracy_mean = np.mean(tcts_focal_middle_accuracies)
+    tcts_focal_middle_final_capital_mean = np.mean(tcts_focal_middle_final_capitals)
+
+    print(f"TCTS Stability (Std Dev of Accuracies): {tcts_stability}")
+    print(f"TCTS Focal Loss Stability (Std Dev of Accuracies): {tcts_focal_stability}")
+    print(f"TCTS Focal Loss Middle Term Stability (Std Dev of Accuracies): {tcts_focal_middle_stability}")
+
+    # 输出均值
+    print(f"TCTS Mean Accuracy: {tcts_accuracy_mean}")
+    print(f"TCTS Mean Final Capital: {tcts_final_capital_mean}")
+    print(f"TCTS Focal Loss Mean Accuracy: {tcts_focal_accuracy_mean}")
+    print(f"TCTS Focal Loss Mean Final Capital: {tcts_focal_final_capital_mean}")
+    print(f"TCTS Focal Loss Middle Term Mean Accuracy: {tcts_focal_middle_accuracy_mean}")
+    print(f"TCTS Focal Loss Middle Term Mean Final Capital: {tcts_focal_middle_final_capital_mean}")
+
+    return tcts_accuracies, tcts_final_capitals, tcts_focal_accuracies, tcts_focal_final_capitals, tcts_focal_middle_accuracies, tcts_focal_middle_final_capitals
+
 def train_model(model, X_train, y_train, criterion, optimizer, epochs, batch_size):
     model.train()
     for epoch in range(epochs):
@@ -590,211 +664,79 @@ def train_model(model, X_train, y_train, criterion, optimizer, epochs, batch_siz
             print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
 
 if __name__ == "__main__":  # 确保 main 函数在脚本直接运行时执行
-    # 1. Define start_date and end_date
-    start_date = "2015-01-01"  # Set your desired start date
+    parser = argparse.ArgumentParser(description='Stock Code for LSTM Prediction')
+    parser.add_argument('--stock_code', type=str, default='BABA', help='Stock code to analyze (default: BABA)')
+    args = parser.parse_args()
+
+    # Step 1: 数据加载
+    stock_code = args.stock_code  # 使用传入的 stock_code 参数
+    start_date = "2015-01-01"  # 上市日期
     end_date = datetime.now().strftime("%Y-%m-%d")  # Updated to use today's date
 
-    # 3. 增加stock_list
-    stock_list = ["UNG","TLT","BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","AMGN","AMZN","BABA","BIDU","BILI","DIS","GILD","GOOGL","JD","LI","META","MSFT","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","PEP","COST","CSCO","ORCL","AMD","UPS","TME","TSLA","XPEV"]
-    listing_dates = {
-        "UNG": "2007-04-18",
-        "TLT": "2002-07-22",
-        "BEKE": "2020-08-13",
-        "GOLD": "1983-05-02",
-        "RIOT": "2003-10-24",
-        "MARA": "2012-07-28",
-        "FXI": "2004-10-05",
-        "FUTU": "2019-03-08",
-        "COIN": "2021-04-14",
-        "CPNG": "2021-03-11",
-        "UVXY": "2011-10-03",
-        "XIACY": "2010-12-15",
-        "IQ": "2018-03-29",
-        "ASHR": "2013-11-06",
-        "XBI": "2006-01-31",
-        "LABU": "2015-05-28",
-        "FNGU": "2018-01-22",
-        "PLTR": "2020-09-30",
-        "TCEHY": "2004-06-16",
-        "MPNGY": "2010-12-15",
-        "OXY": "1964-07-01",
-        "SOXL": "2010-03-11",
-        "SOXS": "2010-03-11",
-        "KWEB": "2013-07-31",
-        "CWEB": "2016-08-17",
-        "YINN": "2009-11-05",
-        "YANG": "2009-11-05",
-        "TQQQ": "2010-02-09",
-        "SQQQ": "2010-02-09",
-        "TNA": "2008-11-05",
-        "AAPL": "1980-12-12",
-        "ALXN": "1996-02-28",
-        "AMGN": "1983-06-17",
-        "AMZN": "1997-05-15",
-        "BABA": "2014-09-19",
-        "BIDU": "2005-08-05",
-        "BIIB": "1991-09-17",
-        "BILI": "2018-03-28",
-        "BRK.B": "1996-05-09",
-        "DIS": "1957-11-12",
-        "GILD": "1992-01-22",
-        "GOOGL": "2004-08-19",
-        "HD": "1981-09-22",
-        "ILMN": "2000-07-28",
-        "INCY": "1993-11-01",
-        "INTC": "1971-10-13",
-        "JD": "2014-05-22",
-        "JNJ": "1944-09-24",
-        "JPM": "1969-05-28",
-        "LI": "2020-07-30",
-        "META": "2012-05-18",
-        "MSFT": "1986-03-13",
-        "NBIX": "1996-05-23",
-        "SBUX": "1992-06-26",
-        "NFLX": "2002-05-23",
-        "NIO": "2018-09-12",
-        "NTES": "2000-06-30",
-        "NVDA": "1999-01-22",
-        "PDD": "2018-07-26",
-        "PG": "1891-01-01",
-        "PYPL": "2015-07-20",
-        "REGN": "1991-03-27",
-        "SGEN": "2001-03-01",
-        "PEP": "1919-01-01",
-        "KO": "1919-09-05",
-        "COST": "1985-12-05",
-        "T": "1984-07-19",
-        "CMCSA": "1972-06-29",
-        "MCD": "1966-04-21",
-        "CVX": "1926-01-01",
-        "XOM": "1920-03-01",
-        "CSCO": "1990-02-16",
-        "ORCL": "1986-03-12",
-        "ABT": "1929-03-19",
-        "ABBV": "2013-01-02",
-        "DHR": "1981-09-24",
-        "ACN": "2001-07-19",
-        "ADBE": "1986-08-20",
-        "CRM": "2004-06-23",
-        "TXN": "1953-10-01",
-        "AMD": "1972-09-27",
-        "QCOM": "1991-12-13",
-        "HON": "1925-01-01",
-        "LIN": "1995-09-06",
-        "PM": "2008-03-17",
-        "NEE": "1950-06-27",
-        "LOW": "1961-12-19",
-        "MDT": "1977-09-20",
-        "BKNG": "1999-03-30",
-        "AMT": "1998-07-08",
-        "UPS": "1999-11-10",
-        "NKE": "1980-12-02",
-        "C": "1968-01-02",
-        "SCHW": "1987-09-23",
-        "TME": "2018-12-12",
-        "TSLA": "2010-06-29",
-        "UNH": "1984-10-05",
-        "V": "2008-03-19",
-    "VRTX": "1991-06-18",
-    "WMT": "1970-08-25",
-    "XPEV": "2020-08-27"
-}
 
-    # 4. 创建文件夹
-    today_date = datetime.now().strftime("%Y-%m-%d")
-    base_folder_path = f"/Users/huiyu/Desktop/pytorch/data/TCTS-Transformer-{today_date}/"  # 基础文件夹路径
-    os.makedirs(base_folder_path, exist_ok=True)  # 创建基础文件夹
+    logging.info(f"Fetching daily data and Alpha158 factors for {stock_code} from {start_date} to {end_date}.")
+    data = get_daily_data_with_factors(stock_code, start_date, end_date)
+    print(f"Data shape after merging: {data.shape}")
 
-    for stock_code in stock_list:
-        folder_path = f"{base_folder_path}{stock_code}/"  # 每个股票的文件夹路径
-        os.makedirs(folder_path, exist_ok=True)  # 创建文件夹
-        # 使用股票的上市日期作为开始日期
-        start_date = listing_dates.get(stock_code, "2015-01-01")  # 默认值为2015-01-01
-        logging.info(f"Fetching daily data and Alpha158 factors for {stock_code} from {start_date} to {end_date}.")
-        data = get_daily_data_with_factors(stock_code, start_date, end_date)
-        print(f"Data shape after merging: {data.shape}")
+    if data.empty:
+        raise ValueError(f"No data found for {stock_code} from {start_date} to {end_date}.")
 
-        if data.empty:
-            raise ValueError(f"No data found for {stock_code} from {start_date} to {end_date}.")
+    # 数据检查
+    logging.info("Data loaded successfully. Checking data head.")
 
-        # 数据检查
-        logging.info("Data loaded successfully. Checking data head.")
+    # Fill missing values
+    data = data.ffill().bfill()  # Use ffill() and bfill() directly
 
-        # Fill missing values
-        data = data.ffill().bfill()  # Use ffill() and bfill() directly
+    # 计算短期动作并添加到数据框
+    data['action_short'], action_period_short = short_term_calculate_action(data)
+    # 打印三种行为在原始数据中的数量
+    action_counts_short = data['action_short'].value_counts()
+    logging.info(f"Short-term Action counts: Buy (0): {action_counts_short.get(0, 0)}, Sell (1): {action_counts_short.get(1, 0)}, Hold (2): {action_counts_short.get(2, 0)}")
 
-        # 计算动作并添加到数据框
-        data['action'], action_period = short_term_calculate_action(data)
-        action_counts = data['action'].value_counts()
-        logging.info(f"Action counts in the original data: Buy (0): {action_counts.get(0, 0)}, Sell (1): {action_counts.get(1, 0)}, Hold (2): {action_counts.get(2, 0)}")
+    # 计算中期动作并添加到数据框
+    data['action_middle'], action_period_middle = middle_term_calculate_action(data)
+    # 打印三种行为在原始数据中的数量
+    action_counts_middle = data['action_middle'].value_counts()
+    logging.info(f"Middle-term Action counts: Buy (0): {action_counts_middle.get(0, 0)}, Sell (1): {action_counts_middle.get(1, 0)}, Hold (2): {action_counts_middle.get(2, 0)}")
 
-        # 归一化特征（不包括动作列）
-        scaler = MinMaxScaler()
-        scaled_features = scaler.fit_transform(data.drop(columns=['action']))
+    # 归一化特征（不包括动作列）
+    scaler = MinMaxScaler()
+    scaled_features = scaler.fit_transform(data.drop(columns=['action_short', 'action_middle']))
 
-        # 创建包含归一化数据和动作的数据框
-        scaled_data = pd.DataFrame(scaled_features, columns=data.columns[:-1])  # 排除动作列
-        scaled_data['action'] = data['action'].values  # 添加动作列
+    # 创建包含归一化数据和短期动作的数据框
+    scaled_data_short = pd.DataFrame(scaled_features, columns=data.columns[:-2])  # 排除动作列
+    scaled_data_short['action'] = data['action_short'].values  # 添加短期动作列
 
-        SEQ_LENGTH = 30
-        X, y = create_sequences(scaled_data.values, SEQ_LENGTH, action_period)
+    # 创建包含归一化数据和中期动作的数据框
+    scaled_data_middle = pd.DataFrame(scaled_features, columns=data.columns[:-2])  # 排除动作列
+    scaled_data_middle['action'] = data['action_middle'].values  # 添加中期动作列
 
-        # 划分数据集
-        split = int(len(X) * 0.9)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
+    SEQ_LENGTH = 30
+    X_short, y_short = create_sequences(scaled_data_short.values, SEQ_LENGTH, action_period_short)
+    X_middle, y_middle = create_sequences(scaled_data_middle.values, SEQ_LENGTH, action_period_middle)
 
-        # 转换为PyTorch张量
-        X_train_torch = torch.tensor(X_train, dtype=torch.float32)
-        y_train_torch = torch.tensor(y_train, dtype=torch.long)  # 使用long进行分类
-        X_test_torch = torch.tensor(X_test, dtype=torch.float32)
-        y_test_torch = torch.tensor(y_test, dtype=torch.long)
+    # 划分数据集
+    split_short = int(len(X_short) * 0.9)
+    X_train_short, X_test_short = X_short[:split_short], X_short[split_short:]
+    y_train_short, y_test_short = y_short[:split_short], y_short[split_short:]
 
-        INPUT_SIZE = X_train.shape[2]
+    split_middle = int(len(X_middle) * 0.9)
+    X_train_middle, X_test_middle = X_middle[:split_middle], X_middle[split_middle:]
+    y_train_middle, y_test_middle = y_middle[:split_middle], y_middle[split_middle:]
 
-        # 使用 Focal Loss 训练 TCTS 模型
-        tcts_model = TCTSModel(INPUT_SIZE, OUTPUT_SIZE)
-        criterion_tcts = nn.CrossEntropyLoss()  # 修改为标准交叉熵损失
-        optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
+    # 转换为PyTorch张量
+    X_train_short_torch = torch.tensor(X_train_short, dtype=torch.float32)
+    y_train_short_torch = torch.tensor(y_train_short, dtype=torch.long)  # 使用long进行分类
+    X_test_short_torch = torch.tensor(X_test_short, dtype=torch.float32)
+    y_test_short_torch = torch.tensor(y_test_short, dtype=torch.long)
 
-        EPOCHS_TCTS = 150
-        train_tcts_model(tcts_model, X_train_torch, y_train_torch, criterion_tcts, optimizer_tcts, EPOCHS_TCTS, BATCH_SIZE)
+    X_train_middle_torch = torch.tensor(X_train_middle, dtype=torch.float32)
+    y_train_middle_torch = torch.tensor(y_train_middle, dtype=torch.long)  # 使用long进行分类
+    X_test_middle_torch = torch.tensor(X_test_middle, dtype=torch.float32)
+    y_test_middle_torch = torch.tensor(y_test_middle, dtype=torch.long)
 
-        # 测试 TCTS 模型
-        tcts_model.eval()
-        with torch.no_grad():
-            outputs_tcts = tcts_model(X_test_torch)
-            _, predicted_tcts = torch.max(outputs_tcts, 1)
-            accuracy_tcts = accuracy_score(y_test, predicted_tcts.numpy())
-            print(f"TCTS Test Accuracy for {stock_code}: {accuracy_tcts}")
+    # 模型参数
+    INPUT_SIZE = X_train_short.shape[2]
 
-        # 计算强买点和强卖点
-        predicted, tcts_strong_buy_points, tcts_strong_sell_points, tcts_buy_points, tcts_sell_points = evaluate_model(tcts_model, X_test_torch, STRONG_BUY_THRESHOLD, STRONG_SELL_THRESHOLD)
-
-        # 进行回测
-        final_capital_tcts = backtest_strategy(data.iloc[len(data) - len(y_test):], predicted_tcts.numpy(), y_test, tcts_strong_buy_points, tcts_strong_sell_points, stock_code=stock_code, folder_path=folder_path)
-
-        # 记录信号
-        potential_buy_stocks, potential_sell_stocks, strong_buy_stocks, strong_sell_stocks = record_signals(stock_code, tcts_strong_buy_points, tcts_strong_sell_points, predicted_tcts, tcts_buy_points, tcts_sell_points)
-
-        # 将信号写入到 signal.txt 文件
-        with open(f"{base_folder_path}signal.txt", 'a') as signal_file:
-            if potential_buy_stocks:
-                signal_file.write(f"Potential Buy Stocks: {', '.join(potential_buy_stocks)}\n")
-            if potential_sell_stocks:
-                signal_file.write(f"Potential Sell Stocks: {', '.join(potential_sell_stocks)}\n")
-            if strong_buy_stocks:
-                signal_file.write(f"Strong Buy Stocks: {', '.join(strong_buy_stocks)}\n")
-            if strong_sell_stocks:
-                signal_file.write(f"Strong Sell Stocks: {', '.join(strong_sell_stocks)}\n")
-            signal_file.flush()
-
-        # 释放内存
-        del X_train_torch, y_train_torch, X_test_torch, y_test_torch, predicted_tcts  # 删除不再需要的变量
-        torch.cuda.empty_cache()  # 如果使用 GPU，释放未使用的 GPU 内存
-
-        # 5. 回测结果(acc和收益值)输入到统一的文件
-        backtest_file_path = f"{base_folder_path}backtest.txt"  # 统一的文件路径
-        with open(backtest_file_path, 'a') as f:
-            f.write(f"{stock_code} - Accuracy: {accuracy_tcts}, Final Capital: ${final_capital_tcts:.2f}\n")
-            f.flush()
+    # A/B 测试
+    ab_test_models(X_train_short_torch, y_train_short_torch, X_test_short_torch, y_test_short_torch, X_train_middle_torch, y_train_middle_torch, X_test_middle_torch, y_test_middle_torch, INPUT_SIZE, OUTPUT_SIZE)
