@@ -543,11 +543,11 @@ def ab_test_models(X_train_short, y_train_short, X_test_short, y_test_short, X_t
     rounds = 5
     for i in range(rounds):
         # 训练 TCTS 模型（基于短期动作目标）
-        print(f"Training TCTS Model for round {i+1}...")
+        print(f"Training TCTS Model with short term action for round {i+1}...")
         tcts_model = TCTSModel(input_size, output_size)
         criterion_tcts = nn.CrossEntropyLoss()
         optimizer_tcts = optim.Adam(tcts_model.parameters(), lr=0.001)
-        train_tcts_model(tcts_model, X_train_short, y_train_short, criterion_tcts, optimizer_tcts, 1, batch_size)
+        train_tcts_model(tcts_model, X_train_short, y_train_short, criterion_tcts, optimizer_tcts, epochs, batch_size)
 
         # 测试 TCTS 模型
         tcts_model.eval()
@@ -565,6 +565,7 @@ def ab_test_models(X_train_short, y_train_short, X_test_short, y_test_short, X_t
         # 释放 TCTS 模型
         del tcts_model, outputs_tcts, predicted_tcts
 
+        print(f"Training TCTS Focal Loss Model with short term action for round {i+1}...")
         # 训练使用 Focal Loss 的 TCTS 模型（基于短期动作目标）
         tcts_focal_model = TCTSModel(input_size, output_size)
         criterion_tcts_focal = FocalLoss(alpha=1.0, gamma=2.0)
