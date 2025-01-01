@@ -17,7 +17,8 @@ def fetch_and_save_stock_data(stock_symbols, start_date, end_date):
         # 重命名列
         symbol_data.reset_index(inplace=True)
         symbol_data['dividends'] = 0.0
-        symbol_data.columns = ['date','open', 'high', 'low', 'close', 'adjclose', 'volume', 'symbol','dividends']
+        #symbol_data.columns = ['date','open', 'high', 'low', 'close', 'adjclose', 'volume', 'symbol','dividends']
+        symbol_data.columns = ['date','adjclose','close', 'high', 'low', 'open', 'volume', 'symbol','dividends']
         symbol_data = symbol_data[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'adjclose', 'dividends']]
         # 保存为 CSV 文件
         individual_output_file = f"/Users/huiyu/Desktop/qlib_data/source/{symbol}.csv"  # 创建每个股票的文件名
@@ -26,8 +27,9 @@ def fetch_and_save_stock_data(stock_symbols, start_date, end_date):
         print(f"Data for {symbol} saved to {individual_output_file}")
 
 
-#symbols = ["IQ","ASHR", "LI", "KWEB", "MPNGY", "BIDU", "TSLA", "NVDA", "BABA", "TCEHY", "PDD", "JD", "NIO", "TQQQ", "SOXL", "OXY", "TAL", "FUTU","BILI"]
+
 symbols = ["UNG","TLT","DIDIY","BEKE","GOLD","RIOT","MARA","FXI","FUTU","COIN","CPNG","UVXY","XIACY","IQ","ASHR","XBI","LABU","FNGU","PLTR","TCEHY","MPNGY","OXY","SOXL","SOXS","KWEB","CWEB","YINN","YANG","TQQQ","SQQQ","TNA","AAPL","ALXN","AMGN","AMZN","BABA","BIDU","BIIB","BILI","BRK.B","DIS","GILD","GOOGL","HD","ILMN","INCY","INTC","JD","JNJ","JPM","LI","META","MSFT","NBIX","SBUX","NFLX","NIO","NTES","NVDA","PDD","PG","PYPL","REGN","SGEN","PEP","KO","COST","T","CMCSA","MCD","CVX","XOM","CSCO","ORCL","ABT","ABBV","DHR","ACN","ADBE","CRM","TXN","AMD","QCOM","HON","LIN","PM","NEE","LOW","MDT","BKNG","AMT","UPS","NKE","C","SCHW","TME","TSLA","UNH","V","VRTX","WMT","XPEV"]
+
 start_date = '2015-01-01'
 end_date = datetime.now().strftime("%Y-%m-%d")  # Updated to use today's date
 
